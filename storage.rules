@@ -1,0 +1,30 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function estaAutenticado() {
+      return request.auth != null;
+    }
+
+    function esPropietario(uid) {
+      return estaAutenticado() && request.auth.uid == uid;
+    }
+
+    function esImagenValida() {
+      return request.resource.contentType.matches('image/.*')
+             && request.resource.size <= 5 * 1024 * 1024;
+    }
+
+    // Fotos de perfil: perfiles/{uid}.{ext}
+    match /perfiles/{archivo} {
+      allow read: if true;
+      allow write: if estaAutenticado() && esImagenValida();
+    }
+
+    // Imágenes de solicitudes: solicitudes/{solicitudId}/{archivo}
+    match /solicitudes/{solicitudId}/{archivo} {
+      allow read: if true;
+      allow write: if estaAutenticado() && esImagenValida();
+    }
+  }
+}
