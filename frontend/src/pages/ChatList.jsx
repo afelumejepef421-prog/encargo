@@ -17,17 +17,36 @@ export default function ChatList({ perfil, usuario }) {
   const uidActual = perfil?.uid || usuario?.uid || auth.currentUser?.uid;
 
   useEffect(() => {
-    if (!uidActual) return;
+    let activo = true;
+
+    if (!uidActual) {
+      const timer = setTimeout(() => {
+        if (activo) setCargando(false);
+      }, 1500);
+      return () => {
+        activo = false;
+        clearTimeout(timer);
+      };
+    }
+
     setCargando(true);
     setError('');
 
     // Suscripción reactiva en tiempo real: al llegar un nuevo mensaje o chat, la lista se actualiza al instante
-    const unsub = firestoreService.suscribirMisChats(uidActual, (lista) => {
-      setChats(Array.isArray(lista) ? lista : []);
+    const unsub = firestoreService.suscribirMisChats(uidActual, (lista, err) => {
+      if (!activo) return;
+      if (err) {
+        setError('No se pudieron sincronizar las conversaciones.');
+      } else {
+        setChats(Array.isArray(lista) ? lista : []);
+      }
       setCargando(false);
     });
 
-    return () => unsub();
+    return () => {
+      activo = false;
+      if (typeof unsub === 'function') unsub();
+    };
   }, [uidActual]);
 
   const formatearHora = (fecha) => {

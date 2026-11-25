@@ -622,7 +622,7 @@ export const firestoreService = {
   async listarMisChats(uid) {
     if (!uid) return [];
     const colRef = collection(db, 'chats');
-    const q = query(colRef, where('participantes', 'array_contains', uid));
+    const q = query(colRef, where('participantes', 'array-contains', uid));
     const snap = await getDocs(q);
     const chats = [];
     for (const d of snap.docs) {
@@ -657,7 +657,7 @@ export const firestoreService = {
       return () => {};
     }
     const colRef = collection(db, 'chats');
-    const q = query(colRef, where('participantes', 'array_contains', uid));
+    const q = query(colRef, where('participantes', 'array-contains', uid));
     return onSnapshot(
       q,
       async (snap) => {
@@ -689,6 +689,7 @@ export const firestoreService = {
       },
       (err) => {
         console.warn('Error en suscribirMisChats:', err);
+        callback([], err);
       }
     );
   },
