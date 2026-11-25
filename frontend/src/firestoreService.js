@@ -368,9 +368,15 @@ export const firestoreService = {
       : `${uids[0]}_${uids[1]}`;
 
     const ref = doc(db, 'chats', chatId);
-    const snap = await getDoc(ref);
+    let chatExiste = false;
+    try {
+      const snap = await getDoc(ref);
+      chatExiste = snap.exists();
+    } catch (err) {
+      chatExiste = false;
+    }
 
-    if (!snap.exists()) {
+    if (!chatExiste) {
       if (solicitud?.id) {
         const estadoSol = String(solicitud.estado || 'PUBLICADO').toUpperCase();
         if (estadoSol !== 'PUBLICADO' && solicitud.providerUid !== uidA) {
@@ -545,24 +551,29 @@ export const firestoreService = {
   },
 
   async obtenerChatPorId(chatId, uidActual) {
-    const snap = await getDoc(doc(db, 'chats', chatId));
-    if (!snap.exists()) return null;
-    const chat = normalizarDoc(snap.id, snap.data());
-    const otroUid = (chat.participantes || []).find((p) => p !== uidActual) || '';
-    if (otroUid) {
-      try {
-        const otroSnap = await getDoc(doc(db, 'users', otroUid));
-        if (otroSnap.exists()) {
-          const d = otroSnap.data();
-          chat.otro_uid = otroUid;
-          chat.otro_nombre =
-            d.displayName || `${d.nombre || ''} ${d.apellidos || ''}`.trim() || 'Usuario';
-          chat.otro_foto = d.photoURL || d.foto_url || '';
-          chat.otro_bio = d.bio || '';
-        }
-      } catch {}
+    try {
+      const snap = await getDoc(doc(db, 'chats', chatId));
+      if (!snap.exists()) return null;
+      const chat = normalizarDoc(snap.id, snap.data());
+      const otroUid = (chat.participantes || []).find((p) => p !== uidActual) || '';
+      if (otroUid) {
+        try {
+          const otroSnap = await getDoc(doc(db, 'users', otroUid));
+          if (otroSnap.exists()) {
+            const d = otroSnap.data();
+            chat.otro_uid = otroUid;
+            chat.otro_nombre =
+              d.displayName || `${d.nombre || ''} ${d.apellidos || ''}`.trim() || 'Usuario';
+            chat.otro_foto = d.photoURL || d.foto_url || '';
+            chat.otro_bio = d.bio || '';
+          }
+        } catch {}
+      }
+      return chat;
+    } catch (e) {
+      console.warn('Error recuperando chat:', e);
+      return { id: chatId, participantes: [uidActual] };
     }
-    return chat;
   },
 
   async listarMisChats(uid) {

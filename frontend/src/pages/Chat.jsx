@@ -66,10 +66,20 @@ export default function Chat({ perfil }) {
 
     setEnviando(true);
     try {
-      await api.post(`/chats/${id}/mensajes`, { contenido: texto.trim() });
+      await firestoreService.enviarMensaje(
+        id,
+        texto.trim(),
+        perfil,
+        infoChat?.otro_uid
+      );
       setTexto('');
     } catch (err) {
-      alert(err.message || 'Error al enviar el mensaje');
+      try {
+        await api.post(`/chats/${id}/mensajes`, { contenido: texto.trim() });
+        setTexto('');
+      } catch (err2) {
+        alert(err2.message || err.message || 'Error al enviar el mensaje');
+      }
     } finally {
       setEnviando(false);
     }

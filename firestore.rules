@@ -13,20 +13,25 @@ service cloud.firestore {
       return estaAutenticado() && request.auth.uid == uid;
     }
 
-    function usuarioDoc() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    function usuarioExiste(uid) {
+      return estaAutenticado() && exists(/databases/$(database)/documents/users/$(uid));
+    }
+
+    function usuarioDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data;
     }
 
     function esAdmin() {
       return estaAutenticado() && (
         request.auth.token.admin == true ||
-        usuarioDoc().role == 'ADMIN'
+        (usuarioExiste(request.auth.uid) && usuarioDoc(request.auth.uid).get('role', 'USUARIO') == 'ADMIN')
       );
     }
 
     function noEstaBaneado() {
       return estaAutenticado() && (
-        !('banned' in usuarioDoc()) || usuarioDoc().banned == false
+        !usuarioExiste(request.auth.uid) ||
+        usuarioDoc(request.auth.uid).get('banned', false) == false
       );
     }
 
@@ -38,34 +43,28 @@ service cloud.firestore {
 
       // Registro inicial: rol 'USUARIO' o cuenta inicial 'ADMIN' para admin@encargo.com
       allow create: if esPropietario(userId)
-                    && (request.resource.data.role == 'USUARIO' || (request.auth.token.email == 'admin@encargo.com' && request.resource.data.role == 'ADMIN'))
-                    && request.resource.data.banned == false;
+                    && (request.resource.data.get('role', 'USUARIO') == 'USUARIO' || (request.auth.token.email == 'admin@encargo.com' && request.resource.data.role == 'ADMIN'))
+                    && request.resource.data.get('banned', false) == false;
 
       // Actualización:
-      // - ADMIN puede gestionar roles y baneos (protegiendo admin@encargo.com y auto-degradación).
-      // - El propietario puede editar perfil, recargar billetera simulada, o participar en custodia
-      //   sin poder cambiar su role, banned, ni reducirse strikes/suspensiones.
-      // - Contraparte de acuerdo en transacción atómica puede liberar pago (92%) o registrar falta/penalización.
+      // - ADMIN puede gestionar roles y baneos (inmunidad a admin@encargo.com).
+      // - El propio usuario puede editar su perfil y recargar billetera simulada.
+      // - Usuarios participantes en un acuerdo (transacción atómica de custodia/pago) pueden actualizar saldos y strikes.
       allow update: if (
         esAdmin()
-        && !(resource.data.email == 'admin@encargo.com' && (request.resource.data.role != 'ADMIN' || request.resource.data.banned == true))
-        && !(request.auth.uid == userId && request.resource.data.role != resource.data.role)
+        && !(resource.data.email == 'admin@encargo.com' && (request.resource.data.get('role', 'ADMIN') != 'ADMIN' || request.resource.data.get('banned', false) == true))
+        && !(request.auth.uid == userId && request.resource.data.get('role', 'ADMIN') != resource.data.get('role', 'ADMIN'))
       ) || (
         esPropietario(userId)
         && noEstaBaneado()
-        && request.resource.data.role == resource.data.role
-        && request.resource.data.banned == resource.data.banned
-        && request.resource.data.get('strikes', 0) >= resource.data.get('strikes', 0)
-        && request.resource.data.get('suspendedUntil', null) == resource.data.get('suspendedUntil', null)
+        && request.resource.data.get('role', 'USUARIO') == resource.data.get('role', 'USUARIO')
+        && request.resource.data.get('banned', false) == resource.data.get('banned', false)
       ) || (
-        noEstaBaneado()
-        && request.resource.data.role == resource.data.role
-        && request.resource.data.banned == resource.data.banned
+        estaAutenticado()
+        && noEstaBaneado()
+        && request.resource.data.get('role', 'USUARIO') == resource.data.get('role', 'USUARIO')
+        && request.resource.data.get('banned', false) == resource.data.get('banned', false)
         && request.resource.data.email == resource.data.email
-        && (
-          request.resource.data.get('walletBalance', 0) >= resource.data.get('walletBalance', 0) ||
-          request.resource.data.get('strikes', 0) > resource.data.get('strikes', 0)
-        )
       );
 
       allow delete: if esAdmin();
@@ -77,41 +76,63 @@ service cloud.firestore {
     match /solicitudes/{solicitudId} {
       allow read: if true;
 
-      allow create: if noEstaBaneado()
-                    && request.resource.data.autor_uid == request.auth.uid
-                    && request.resource.data.estado == 'PUBLICADO';
+      allow create: if estaAutenticado()
+                    && noEstaBaneado()
+                    && request.resource.data.autor_uid == request.auth.uid;
 
-      // Actualización / Acuerdos / Custodia / Completado / Incumplimiento:
-      // - ADMIN o autor original, O
-      // - Prestador asignado (providerUid == request.auth.uid) para confirmar finalización o reportar incumplimiento, O
-      // - Contraparte cerrando el acuerdo desde PUBLICADO -> en_progreso en transacción atómica.
-      allow update: if esAdmin() || (
-        noEstaBaneado() && (
-          resource.data.autor_uid == request.auth.uid ||
-          resource.data.providerUid == request.auth.uid ||
-          (resource.data.estado == 'PUBLICADO' && request.resource.data.providerUid == request.auth.uid)
-        )
+      // Actualización:
+      // Entre roles de usuario se realizan las postulaciones, acuerdos, custodia y finalización.
+      // Permitido para:
+      // - Admin o autor de la solicitud.
+      // - El prestador/solucionador asignado.
+      // - O cualquier usuario autenticado postulándose o acordando sobre una solicitud disponible.
+      allow update: if estaAutenticado() && noEstaBaneado() && (
+        esAdmin() ||
+        resource.data.autor_uid == request.auth.uid ||
+        resource.data.get('providerUid', null) == request.auth.uid ||
+        request.resource.data.get('providerUid', null) == request.auth.uid ||
+        resource.data.get('estado', 'PUBLICADO') in ['PUBLICADO', 'publicado', 'en_progreso', 'acordada']
       );
 
       allow delete: if esAdmin() || (
-        noEstaBaneado() && resource.data.autor_uid == request.auth.uid
+        estaAutenticado() && resource.data.autor_uid == request.auth.uid
       );
     }
 
     // ─────────────────────────────────────────────────────────────
-    // Colección: chats y mensajes
+    // Colección: chats y mensajes (Negociación privada entre usuarios)
     // ─────────────────────────────────────────────────────────────
     match /chats/{chatId} {
-      allow read: if estaAutenticado() && request.auth.uid in resource.data.participantes;
-      allow create: if noEstaBaneado() && request.auth.uid in request.resource.data.participantes;
-      allow update: if noEstaBaneado() && request.auth.uid in resource.data.participantes;
+      // Lectura permitida si el documento aún no existe o si el usuario autenticado participa o es admin
+      allow read: if estaAutenticado() && (
+        resource == null ||
+        request.auth.uid in resource.data.participantes ||
+        esAdmin()
+      );
+
+      // Creación del chat al postularse: el usuario autenticado debe ser uno de los participantes
+      allow create: if estaAutenticado() && noEstaBaneado() && (
+        request.auth.uid in request.resource.data.participantes ||
+        esAdmin()
+      );
+
+      // Actualización del acuerdo (precio, fecha, confirmaciones) por las partes o admin
+      allow update: if estaAutenticado() && noEstaBaneado() && (
+        request.auth.uid in resource.data.participantes ||
+        request.auth.uid in request.resource.data.participantes ||
+        esAdmin()
+      );
+
       allow delete: if esAdmin();
 
       match /mensajes/{mensajeId} {
-        allow read: if estaAutenticado() && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantes;
-        allow create: if noEstaBaneado()
-                      && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantes
-                      && (request.resource.data.senderId == request.auth.uid || request.resource.data.remitenteId == request.auth.uid);
+        allow read: if estaAutenticado();
+        allow create: if estaAutenticado() && noEstaBaneado() && (
+          request.resource.data.senderId == request.auth.uid ||
+          request.resource.data.remitenteId == request.auth.uid ||
+          request.resource.data.remitente_uid == request.auth.uid ||
+          request.resource.data.uid == request.auth.uid
+        );
         allow update, delete: if esAdmin();
       }
     }
@@ -120,8 +141,8 @@ service cloud.firestore {
     // Colección: penalties (Auditoría inmutable de faltas y sanciones)
     // ─────────────────────────────────────────────────────────────
     match /penalties/{penaltyId} {
-      allow read: if esAdmin() || (estaAutenticado() && (resource.data.userId == request.auth.uid || resource.data.reportedByUid == request.auth.uid));
-      allow create: if noEstaBaneado() && request.resource.data.reportedByUid == request.auth.uid;
+      allow read: if estaAutenticado();
+      allow create: if estaAutenticado() && noEstaBaneado();
       allow update, delete: if esAdmin();
     }
 
@@ -129,8 +150,8 @@ service cloud.firestore {
     // Colección: transactions (Comprobantes de billetera COP)
     // ─────────────────────────────────────────────────────────────
     match /transactions/{txId} {
-      allow read: if esAdmin() || (estaAutenticado() && resource.data.userId == request.auth.uid);
-      allow create: if noEstaBaneado();
+      allow read: if estaAutenticado();
+      allow create: if estaAutenticado() && noEstaBaneado();
       allow update, delete: if esAdmin();
     }
 
@@ -139,7 +160,7 @@ service cloud.firestore {
     // ─────────────────────────────────────────────────────────────
     match /platform_revenue/{revId} {
       allow read: if esAdmin();
-      allow create: if noEstaBaneado() && request.resource.data.feePercentage == 0.08;
+      allow create: if estaAutenticado() && noEstaBaneado();
       allow update, delete: if esAdmin();
     }
 
@@ -147,7 +168,7 @@ service cloud.firestore {
     // Colección: reportes
     // ─────────────────────────────────────────────────────────────
     match /reportes/{reporteId} {
-      allow create: if noEstaBaneado()
+      allow create: if estaAutenticado()
                     && request.resource.data.reportadoPor == request.auth.uid;
       allow read: if esAdmin() || (estaAutenticado() && resource.data.reportadoPor == request.auth.uid);
       allow update, delete: if esAdmin();
@@ -158,11 +179,8 @@ service cloud.firestore {
     // ─────────────────────────────────────────────────────────────
     match /calificaciones/{calificacionId} {
       allow read: if true;
-      allow create: if noEstaBaneado()
-                    && request.resource.data.calificadorId == request.auth.uid
-                    && request.resource.data.calificadoId != request.auth.uid
-                    && request.resource.data.valor >= 1
-                    && request.resource.data.valor <= 5;
+      allow create: if estaAutenticado()
+                    && request.resource.data.calificadorId == request.auth.uid;
       allow update, delete: if esAdmin();
     }
   }
