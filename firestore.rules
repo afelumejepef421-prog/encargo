@@ -24,7 +24,7 @@ service cloud.firestore {
     function esAdmin() {
       return estaAutenticado() && (
         request.auth.token.admin == true ||
-        (usuarioExiste(request.auth.uid) && usuarioDoc(request.auth.uid).get('role', 'USUARIO') == 'ADMIN')
+        (usuarioExiste(request.auth.uid) && (usuarioDoc(request.auth.uid).get('role', 'USUARIO') == 'ADMIN' || usuarioDoc(request.auth.uid).get('rol', 'USUARIO') == 'ADMIN'))
       );
     }
 

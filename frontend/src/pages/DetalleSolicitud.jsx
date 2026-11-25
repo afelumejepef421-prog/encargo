@@ -4,7 +4,7 @@
  * bloqueo a terceros tras doble confirmación, custodia (Escrow), confirmación de
  * trabajo completado (92%/8%) y reporte de incumplimiento.
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import api from '../api';
 import {
@@ -19,6 +19,7 @@ export default function DetalleSolicitud({ perfil }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const [solicitud, setSolicitud] = useState(null);
+  const [chatsPostulaciones, setChatsPostulaciones] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
   const [procesando, setProcesando] = useState(false);
@@ -26,6 +27,12 @@ export default function DetalleSolicitud({ perfil }) {
 
   const esAdmin = perfil?.rol === 'ADMIN';
   const susp = verificarSuspensionActiva(perfil);
+
+  const cargarChats = useCallback(async (solId) => {
+    if (!solId) return;
+    const lista = await firestoreService.listarChatsDeSolicitud(solId);
+    setChatsPostulaciones(lista);
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -36,11 +43,12 @@ export default function DetalleSolicitud({ perfil }) {
         setError('Solicitud no encontrada');
       } else {
         setSolicitud(data);
+        cargarChats(id);
       }
       setCargando(false);
     });
     return () => unsub();
-  }, [id]);
+  }, [id, cargarChats]);
 
   const handleEliminar = async () => {
     if (!window.confirm('¿Estás seguro de que deseas eliminar esta solicitud?')) return;
@@ -270,17 +278,90 @@ export default function DetalleSolicitud({ perfil }) {
           </div>
         </div>
 
+        {/* Panel de Postulaciones y Chats Recibidos para el Autor */}
+        {esPropia && chatsPostulaciones.length > 0 && (
+          <div style={{ marginTop: '20px', marginBottom: '20px', padding: '16px', background: '#f0fdf4', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
+            <h3 style={{ margin: '0 0 12px', fontSize: '1rem', color: '#166534' }}>
+              📥 Postulaciones y chats de negociación recibidos ({chatsPostulaciones.length})
+            </h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {chatsPostulaciones.map((c) => (
+                <div
+                  key={c.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    background: '#fff',
+                    padding: '12px 14px',
+                    borderRadius: '6px',
+                    border: '1px solid #e2e8f0',
+                    flexWrap: 'wrap',
+                    gap: '8px',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    {c.prestador_foto ? (
+                      <img
+                        src={c.prestador_foto}
+                        alt={c.prestador_nombre}
+                        style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover' }}
+                      />
+                    ) : (
+                      <div className="perfil-avatar-placeholder" style={{ width: 38, height: 38, fontSize: '1rem' }}>
+                        👤
+                      </div>
+                    )}
+                    <div>
+                      <strong style={{ fontSize: '0.9375rem' }}>{c.prestador_nombre || 'Postulante'}</strong>
+                      {c.prestador_municipio && (
+                        <span style={{ fontSize: '0.8rem', color: '#666', marginLeft: '6px' }}>
+                          📍 {c.prestador_municipio}
+                        </span>
+                      )}
+                      <p style={{ margin: '2px 0 0', fontSize: '0.8125rem', color: '#555' }}>
+                        {c.ultimo_mensaje || c.ultimoMensaje || 'Conversación iniciada'}
+                      </p>
+                    </div>
+                  </div>
+                  <Link to={`/chat/${c.id}`} className="btn-principal btn-sm">
+                    💬 Abrir chat de negociación
+                  </Link>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Acciones */}
         <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
           {!esPropia && estaPublicada && (
-            <button
-              type="button"
-              className="btn-principal"
-              disabled={procesando || susp.suspendida}
-              onClick={iniciarNegociacion}
-            >
-              🤝 {procesando ? 'Abriendo negociación…' : 'Postularme / Negociar'}
-            </button>
+            (() => {
+              const miChat = chatsPostulaciones.find((c) =>
+                (c.participantes || []).includes(perfil?.uid)
+              );
+              if (miChat) {
+                return (
+                  <Link
+                    to={`/chat/${miChat.id}`}
+                    className="btn-principal"
+                    style={{ display: 'inline-flex', alignItems: 'center' }}
+                  >
+                    💬 Continuar negociación / Ver chat
+                  </Link>
+                );
+              }
+              return (
+                <button
+                  type="button"
+                  className="btn-principal"
+                  disabled={procesando || susp.suspendida}
+                  onClick={iniciarNegociacion}
+                >
+                  🤝 {procesando ? 'Abriendo negociación…' : 'Postularme / Negociar'}
+                </button>
+              );
+            })()
           )}
 
           {esParteDelAcuerdo && solicitud.chatId && (

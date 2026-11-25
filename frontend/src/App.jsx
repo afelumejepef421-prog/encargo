@@ -223,7 +223,7 @@ export default function App() {
             path="/chat"
             element={
               <RutaProtegida usuario={usuario} perfil={perfil}>
-                <ChatList />
+                <ChatList perfil={perfil} usuario={usuario} />
               </RutaProtegida>
             }
           />

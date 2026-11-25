@@ -418,21 +418,43 @@ export const firestoreService = {
   },
 
   async enviarMensaje(chatId, texto, emisor, receptorId) {
+    if (!chatId || !texto?.trim() || !emisor?.uid) {
+      throw new Error('Datos incompletos para enviar el mensaje.');
+    }
+
     const chatRef = doc(db, 'chats', chatId);
     const mensajesCol = collection(chatRef, 'mensajes');
 
-    const chatSnap = await getDoc(chatRef);
-    const chatData = chatSnap.exists() ? chatSnap.data() : {};
+    let chatData = {};
+    try {
+      const chatSnap = await getDoc(chatRef);
+      if (chatSnap.exists()) {
+        chatData = chatSnap.data();
+      }
+    } catch (err) {
+      console.warn('No se pudo leer chat padre antes de enviar mensaje:', err);
+    }
+
+    // Resolver receptorId si no fue suministrado explícitamente
+    let idDestino = receptorId || '';
+    if (!idDestino && Array.isArray(chatData.participantes)) {
+      idDestino = chatData.participantes.find((p) => p !== emisor.uid) || '';
+    }
+    if (!idDestino && chatId) {
+      const partes = chatId.split('_');
+      idDestino = partes.find((p) => p && p !== emisor.uid && !p.startsWith('sol-')) || '';
+    }
 
     let receptorEmail = '';
     let receptorNombre = 'Usuario';
-    if (receptorId) {
+    if (idDestino) {
       try {
-        const rSnap = await getDoc(doc(db, 'users', receptorId));
+        const rSnap = await getDoc(doc(db, 'users', idDestino));
         if (rSnap.exists()) {
-          receptorEmail = rSnap.data().email || '';
+          const rd = rSnap.data();
+          receptorEmail = rd.email || '';
           receptorNombre =
-            rSnap.data().displayName || rSnap.data().nombre || 'Usuario';
+            rd.displayName || `${rd.nombre || ''} ${rd.apellidos || ''}`.trim() || 'Usuario';
         }
       } catch {}
     }
@@ -450,13 +472,15 @@ export const firestoreService = {
     const msgData = {
       chatId,
       senderId: emisor.uid,
-      receiverId: receptorId || '',
+      receiverId: idDestino,
       senderEmail: emisor.email || '',
       receiverEmail: receptorEmail,
       senderName,
       receiverName: receptorNombre,
       content: texto.trim(),
       timestamp: serverTimestamp(),
+      creado_en: serverTimestamp(),
+      fechaIso: ahoraIso,
       remitenteId: emisor.uid,
       remitente_uid: emisor.uid,
       contenido: texto.trim(),
@@ -465,17 +489,22 @@ export const firestoreService = {
 
     const ref = await addDoc(mensajesCol, msgData);
 
-    const chatUpdate = {
-      ultimo_mensaje: texto.trim().slice(0, 120),
-      ultimoMensaje: texto.trim().slice(0, 120),
-      actualizado_en: serverTimestamp(),
-    };
-    if (chatData.clientUid === emisor.uid) {
-      chatUpdate.clientHasMessaged = true;
-    } else if (chatData.providerUid === emisor.uid) {
-      chatUpdate.providerHasMessaged = true;
+    // Actualizar resumen en el documento del chat padre sin bloquear si falla
+    try {
+      const chatUpdate = {
+        ultimo_mensaje: texto.trim().slice(0, 120),
+        ultimoMensaje: texto.trim().slice(0, 120),
+        actualizado_en: serverTimestamp(),
+      };
+      if (chatData.clientUid === emisor.uid) {
+        chatUpdate.clientHasMessaged = true;
+      } else if (chatData.providerUid === emisor.uid) {
+        chatUpdate.providerHasMessaged = true;
+      }
+      await updateDoc(chatRef, chatUpdate);
+    } catch (eUp) {
+      console.warn('Aviso: no se pudo actualizar el resumen del chat padre:', eUp);
     }
-    await updateDoc(chatRef, chatUpdate);
 
     return { ...msgData, id: ref.id, timestamp: ahoraIso };
   },
@@ -513,21 +542,35 @@ export const firestoreService = {
   suscribirMensajes(chatId, callback) {
     if (!chatId) return () => {};
     const mensajesCol = collection(db, 'chats', chatId, 'mensajes');
-    const q = query(mensajesCol, orderBy('timestamp', 'asc'));
     return onSnapshot(
-      q,
+      mensajesCol,
       (snap) => {
-        callback(snap.docs.map((d) => normalizarDoc(d.id, d.data())));
+        const lista = snap.docs
+          .map((d) => normalizarDoc(d.id, d.data()))
+          .filter(Boolean);
+        lista.sort((a, b) => {
+          const tA = new Date(a.timestamp || a.creado_en || a.fechaIso || 0).getTime() || 0;
+          const tB = new Date(b.timestamp || b.creado_en || b.fechaIso || 0).getTime() || 0;
+          return tA - tB;
+        });
+        callback(lista);
       },
-      async () => {
-        const snap = await getDocs(mensajesCol);
-        const list = snap.docs.map((d) => normalizarDoc(d.id, d.data()));
-        list.sort((a, b) =>
-          String(a.timestamp || a.creado_en || '').localeCompare(
-            String(b.timestamp || b.creado_en || '')
-          )
-        );
-        callback(list);
+      async (err) => {
+        console.warn('Aviso onSnapshot mensajes:', err);
+        try {
+          const snap = await getDocs(mensajesCol);
+          const list = snap.docs
+            .map((d) => normalizarDoc(d.id, d.data()))
+            .filter(Boolean);
+          list.sort((a, b) => {
+            const tA = new Date(a.timestamp || a.creado_en || a.fechaIso || 0).getTime() || 0;
+            const tB = new Date(b.timestamp || b.creado_en || b.fechaIso || 0).getTime() || 0;
+            return tA - tB;
+          });
+          callback(list);
+        } catch (e2) {
+          console.error('Error cargando mensajes de respaldo:', e2);
+        }
       }
     );
   },
@@ -535,18 +578,18 @@ export const firestoreService = {
   async listarMensajes(chatId) {
     const mensajesCol = collection(db, 'chats', chatId, 'mensajes');
     try {
-      const q = query(mensajesCol, orderBy('timestamp', 'asc'));
-      const snap = await getDocs(q);
-      return snap.docs.map((d) => normalizarDoc(d.id, d.data()));
-    } catch {
       const snap = await getDocs(mensajesCol);
-      const list = snap.docs.map((d) => normalizarDoc(d.id, d.data()));
-      list.sort((a, b) =>
-        String(a.timestamp || a.creado_en || '').localeCompare(
-          String(b.timestamp || b.creado_en || '')
-        )
-      );
+      const list = snap.docs
+        .map((d) => normalizarDoc(d.id, d.data()))
+        .filter(Boolean);
+      list.sort((a, b) => {
+        const tA = new Date(a.timestamp || a.creado_en || a.fechaIso || 0).getTime() || 0;
+        const tB = new Date(b.timestamp || b.creado_en || b.fechaIso || 0).getTime() || 0;
+        return tA - tB;
+      });
       return list;
+    } catch {
+      return [];
     }
   },
 
@@ -606,6 +649,77 @@ export const firestoreService = {
       String(b.actualizado_en || '').localeCompare(String(a.actualizado_en || ''))
     );
     return chats;
+  },
+
+  suscribirMisChats(uid, callback) {
+    if (!uid) {
+      callback([]);
+      return () => {};
+    }
+    const colRef = collection(db, 'chats');
+    const q = query(colRef, where('participantes', 'array_contains', uid));
+    return onSnapshot(
+      q,
+      async (snap) => {
+        const chats = [];
+        for (const d of snap.docs) {
+          const chat = normalizarDoc(d.id, d.data());
+          const otroUid = (chat.participantes || []).find((p) => p !== uid) || '';
+          if (otroUid) {
+            try {
+              const otroSnap = await getDoc(doc(db, 'users', otroUid));
+              if (otroSnap.exists()) {
+                const uData = otroSnap.data();
+                chat.otro_uid = otroUid;
+                chat.otro_nombre =
+                  uData.displayName ||
+                  `${uData.nombre || ''} ${uData.apellidos || ''}`.trim() ||
+                  'Usuario';
+                chat.otro_foto = uData.photoURL || uData.foto_url || '';
+                chat.otro_bio = uData.bio || '';
+              }
+            } catch {}
+          }
+          chats.push(chat);
+        }
+        chats.sort((a, b) =>
+          String(b.actualizado_en || '').localeCompare(String(a.actualizado_en || ''))
+        );
+        callback(chats);
+      },
+      (err) => {
+        console.warn('Error en suscribirMisChats:', err);
+      }
+    );
+  },
+
+  async listarChatsDeSolicitud(solicitudId) {
+    if (!solicitudId) return [];
+    try {
+      const colRef = collection(db, 'chats');
+      const q = query(colRef, where('solicitudId', '==', solicitudId));
+      const snap = await getDocs(q);
+      const lista = [];
+      for (const d of snap.docs) {
+        const c = normalizarDoc(d.id, d.data());
+        if (c.providerUid) {
+          try {
+            const pSnap = await getDoc(doc(db, 'users', c.providerUid));
+            if (pSnap.exists()) {
+              const pd = pSnap.data();
+              c.prestador_nombre = pd.displayName || `${pd.nombre || ''} ${pd.apellidos || ''}`.trim() || 'Postulante';
+              c.prestador_foto = pd.photoURL || pd.foto_url || '';
+              c.prestador_municipio = pd.municipio || '';
+            }
+          } catch {}
+        }
+        lista.push(c);
+      }
+      return lista;
+    } catch (e) {
+      console.warn('Error en listarChatsDeSolicitud:', e);
+      return [];
+    }
   },
 
   // ── Transacciones Atómicas de Acuerdo, Custodia y Pagos ──

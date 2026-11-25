@@ -1,32 +1,34 @@
 /**
  * Encargo · ChatList.jsx
- * Lista de conversaciones del usuario.
+ * Lista de conversaciones del usuario en tiempo real con suscripción Firestore.
  */
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api';
+import { firestoreService } from '../firestoreService';
+import { auth } from '../firebase';
 import Estado from '../components/Estado';
 
-export default function ChatList() {
+export default function ChatList({ perfil, usuario }) {
   const [chats, setChats] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
 
+  const uidActual = perfil?.uid || usuario?.uid || auth.currentUser?.uid;
+
   useEffect(() => {
-    const cargar = async () => {
-      setCargando(true);
-      setError('');
-      try {
-        const data = await api.get('/chats');
-        setChats(Array.isArray(data) ? data : data.chats || []);
-      } catch (err) {
-        setError(err.message || 'Error al cargar conversaciones');
-      } finally {
-        setCargando(false);
-      }
-    };
-    cargar();
-  }, []);
+    if (!uidActual) return;
+    setCargando(true);
+    setError('');
+
+    // Suscripción reactiva en tiempo real: al llegar un nuevo mensaje o chat, la lista se actualiza al instante
+    const unsub = firestoreService.suscribirMisChats(uidActual, (lista) => {
+      setChats(Array.isArray(lista) ? lista : []);
+      setCargando(false);
+    });
+
+    return () => unsub();
+  }, [uidActual]);
 
   const formatearHora = (fecha) => {
     if (!fecha) return '';

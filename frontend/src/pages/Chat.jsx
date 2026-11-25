@@ -62,22 +62,51 @@ export default function Chat({ perfil }) {
 
   const enviarMensaje = async (e) => {
     e.preventDefault();
-    if (!texto.trim() || enviando || susp.suspendida) return;
+    const textoAEnviar = texto.trim();
+    if (!textoAEnviar || enviando || susp.suspendida) return;
 
+    // Destinatario seguro: usar infoChat.otro_uid o extraer del id del chat
+    let idDestino = infoChat?.otro_uid;
+    if (!idDestino && id) {
+      const partes = id.split('_');
+      idDestino = partes.find((p) => p && p !== perfil.uid && !p.startsWith('sol-')) || '';
+    }
+
+    const tempId = `temp-${Date.now()}`;
+    const msgOptimista = {
+      id: tempId,
+      chatId: id,
+      senderId: perfil.uid,
+      remitenteId: perfil.uid,
+      receiverId: idDestino || '',
+      senderName: perfil.displayName || perfil.nombre || 'Tú',
+      content: textoAEnviar,
+      texto: textoAEnviar,
+      contenido: textoAEnviar,
+      timestamp: new Date().toISOString(),
+      enviando: true,
+    };
+
+    // Actualización optimista inmediata en pantalla
+    setMensajes((prev) => [...prev, msgOptimista]);
+    setTexto('');
     setEnviando(true);
+
     try {
       await firestoreService.enviarMensaje(
         id,
-        texto.trim(),
+        textoAEnviar,
         perfil,
-        infoChat?.otro_uid
+        idDestino
       );
-      setTexto('');
     } catch (err) {
+      console.warn('Reintentando envío por adapter api:', err);
       try {
-        await api.post(`/chats/${id}/mensajes`, { contenido: texto.trim() });
-        setTexto('');
+        await api.post(`/chats/${id}/mensajes`, { contenido: textoAEnviar });
       } catch (err2) {
+        // En caso de fallo real, retirar mensaje temporal y devolver texto
+        setMensajes((prev) => prev.filter((m) => m.id !== tempId));
+        setTexto(textoAEnviar);
         alert(err2.message || err.message || 'Error al enviar el mensaje');
       }
     } finally {
